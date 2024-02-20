@@ -7,6 +7,16 @@ import dotenv
 from langchain_openai import OpenAI
 from langchain_experimental.agents.agent_toolkits import create_pandas_dataframe_agent
 
+from langchain.prompts import PromptTemplate
+from langchain.chains import LLMChain, SimpleSequentialChain, SequentialChain
+from langchain import hub
+from langchain.agents import AgentExecutor
+from langchain.agents import create_openai_functions_agent
+from langchain_openai import ChatOpenAI
+from langchain_experimental.tools import PythonREPLTool
+from langchain.agents.agent_types import AgentType
+from langchain_community.utilities import WikipediaAPIWrapper
+
 # LLM model
 dotenv.load_dotenv()  # Load from .env file
 openai.api_key = os.environ.get("OPENAI_API_KEY")  # Access the variable
@@ -89,8 +99,6 @@ if st.session_state.clicked[1]:
             st.write(normality)
             outliers = pandas_agent.run(f"Assess the presence of outliers of {user_question_variable}")
             st.write(outliers)
-            trends = pandas_agent.run(f"Analyse trends, seasonality, and cyclic patterns of {user_question_variable}")
-            st.write(trends)
             missing_values = pandas_agent.run(f"Determine the extent of missing values of {user_question_variable}")
             st.write(missing_values)
             return
@@ -101,6 +109,57 @@ if st.session_state.clicked[1]:
             dataframe_info = pandas_agent.run(user_question_dataframe)
             st.write(dataframe_info)
             return
+
+
+        @st.cache_resource
+        def wiki(prompt):
+            wiki_research = WikipediaAPIWrapper().run(prompt)
+            return wiki_research
+
+
+        @st.cache_data
+        def prompt_templates():
+            data_problem_template = PromptTemplate(
+                input_variables=['business_problem'],
+                template='Convert the following business problem into a data science problem: {business_problem}.'
+            )
+
+            model_selection_template = PromptTemplate(
+                input_variables=['data_problem', 'wikipedia_research'],
+                template='Give a list of machine learning algorithms that are suitable to solve this problem: {data_problem}, while using this Wikipedia research: {wikipedia_research}.'
+            )
+            return data_problem_template, model_selection_template
+
+
+        @st.cache_resource
+        def chains():
+            data_problem_chain = LLMChain(llm=llm, prompt=prompt_templates()[0], verbose=True,
+                                          output_key='data_problem')
+            model_selection_chain = LLMChain(llm=llm, prompt=prompt_templates()[1], verbose=True,
+                                             output_key='model_selection')
+            sequential_chain = SequentialChain(chains=[data_problem_chain, model_selection_chain],
+                                               input_variables=['business_problem', 'wikipedia_research'],
+                                               output_variables=['data_problem', 'model_selection'], verbose=True)
+            return sequential_chain
+
+
+        @st.cache_data
+        def chains_output(prompt, wiki_research):
+            my_chain = chains()
+            my_chain_output = my_chain({'business_problem': prompt, 'wikipedia_research': wiki_research})
+            my_data_problem = my_chain_output["data_problem"]
+            my_model_selection = my_chain_output["model_selection"]
+            return my_data_problem, my_model_selection
+
+
+        @st.cache_data
+        def list_to_selectbox(my_model_selection_input):
+            algorithm_lines = my_model_selection_input.split('\n')
+            algorithms = [algorithm.split(':')[-1].split('.')[-1].strip() for algorithm in algorithm_lines if algorithm.strip()]
+            algorithms.insert(0, "Select Algorithm")
+            formatted_list_output = [f"{algorithm}" for algorithm in algorithms if algorithm]
+            return formatted_list_output
+
 
         # Main
         st.header("Exploratory data analysis")
@@ -127,3 +186,23 @@ if st.session_state.clicked[1]:
                 function_question_dataframe()
             if user_question_dataframe in ("no", "No"):
                 st.write("")
+
+                if user_question_dataframe:
+                    st.divider()
+                    st.header("Data Science Problems")
+                    st.write("Now that we have a solid grasp of the data at hand and a clear understanding of the variable we intend to investigate, it's important that we reframe our business problem")
+
+                    prompt = st.text_area("Add your Prompt here")
+
+                    if prompt:
+                        wiki_research = wiki(prompt)
+                        my_data_problem = chains_output(prompt, wiki_research)[0]
+                        my_model_selection = chains_output(prompt, wiki_research)[1]
+
+                        st.write(my_data_problem)
+                        st.write(my_model_selection)
+
+                        formatted_list= list_to_selectbox(my_model_selection)
+                        selected_algorithm=st.selectbox("Select Machine Learning Algorithms", formatted_list)
+
+
